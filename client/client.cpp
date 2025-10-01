@@ -18,6 +18,7 @@
 #include <mutex>
 #include <sstream>
 #include <functional>
+#include <algorithm>
 #include <openssl/evp.h>
 #include <atomic>
 
@@ -39,8 +40,8 @@ struct DownloadInfo {
     string filename;
     string dest_path;
     long long total_size;
-    int total_pieces;
-    int completed_pieces;
+    long long total_pieces;
+    long long completed_pieces;
     vector<int> piece_status; // 0=pending, 1=downloading, 2=completed, 3=failed
     vector<string> piece_hashes;
     string full_hash;
@@ -53,7 +54,7 @@ mutex downloads_mtx;
 
 // forward declaration
 string filehash(const string &filepath);
-vector<string> compute_piece_hashes(const string &filepath, int &num_pieces);
+vector<string> compute_piece_hashes(const string &filepath, long long &num_pieces);
 
 void displaycomds() {
     cout << "\n==================== Available Commands ====================\n";
@@ -217,13 +218,13 @@ string filehash(const string &filepath) {
     return string(hex);
 }
 
-vector<string> compute_piece_hashes(const string &filepath, int &num_pieces) {
+vector<string> compute_piece_hashes(const string &filepath, long long &num_pieces) {
     vector<string> hashes;
     ifstream fin(filepath, ios::binary | ios::ate);
     long long filesize = fin.tellg();
     fin.seekg(0, ios::beg);
     num_pieces = (filesize + PIECE_SIZE - 1) / PIECE_SIZE;
-    for (int i = 0; i < num_pieces; ++i) {
+    for (long long i = 0; i < num_pieces; ++i) {
         vector<char> buf(PIECE_SIZE);
         fin.read(buf.data(), PIECE_SIZE);
         streamsize n = fin.gcount();
@@ -247,6 +248,7 @@ vector<string> compute_piece_hashes(const string &filepath, int &num_pieces) {
 
 int main(int argc, char *argv[]) {
     if (argc != 3) { cout << "----- Invalid Arguments ------" << endl; return 0; }
+    srand(time(nullptr)); // Initialize random seed
     logout_local();
 
     // parse hostip:hostport from argv[1]
@@ -289,7 +291,6 @@ int main(int argc, char *argv[]) {
         int length = cmds.size();
         if (length == 0) { cout << "-------- Unrecognized command. Enter a valid command. --------" << endl; continue; }
         
-
         unordered_map<string, function<void()>> cmdMap;
 
         cmdMap["create_user"] = [&]() {
@@ -374,7 +375,7 @@ int main(int argc, char *argv[]) {
                 if (!fin) { cout << "File not found: " << fpath << endl; return; }
                 long long fsize = fin.tellg(); fin.close();
                 // compute piece hashes and full hash
-                int num_pieces = 0;
+                long long num_pieces = 0;
                 vector<string> piece_hashes = compute_piece_hashes(fpath, num_pieces);
                 string fullhash = filehash(fpath);
                 // build command: upload_file <gid> <fname> <peername> <filesize> <fullhash> <num_pieces> <h1> <h2> ...
@@ -382,8 +383,6 @@ int main(int argc, char *argv[]) {
                 string fname = (pos == string::npos) ? fpath : fpath.substr(pos + 1);
                 // store file locally so peer server can serve pieces
                 uploaded_files[fname] = fpath;   // >>> FIX <<<
-                cout << "[Peer] Registered file for sharing: " << fname 
-                    << " (" << fpath << ")\n";  // >>> DEBUG <<<
 
                 string cmd = "upload_file " + gid + " " + fname + " " + peername + " " + to_string(fsize) + " " + fullhash + " " + to_string(num_pieces);
                 for (auto &h : piece_hashes) cmd += " " + h;
@@ -394,11 +393,13 @@ int main(int argc, char *argv[]) {
 
         // Enhanced download_file with progress tracking and better error handling
         cmdMap["download_file"] = [&]() {
+          
+            
             logincheck([&]() {
                 if (length < 4) { cout << "Usage: download_file <groupid> <filename> <dest_path>\n"; return; }
 
                 string gid = cmds[1], fname = cmds[2], destpath = cmds[3];
-
+                
                 // Check if already downloading this file
                 {
                     lock_guard<mutex> lock(downloads_mtx);
@@ -420,7 +421,9 @@ int main(int argc, char *argv[]) {
                 };
 
                 // Query tracker for file metadata and peers
-                string r = sendcomd(serversock, "download_file " + gid + " " + fname + " " + peername);
+                string tracker_cmd = "download_file " + gid + " " + fname + " " + peername;
+                
+                string r = sendcomd(serversock, tracker_cmd);
                 if (r.rfind("FILE ", 0) != 0) { cout << r << endl; return; }
 
                 // Parse file metadata
@@ -462,10 +465,22 @@ int main(int argc, char *argv[]) {
                     outf = fopen(fullout.c_str(), "wb+");
                     if (!outf) { cout << "Failed to create output file: " << fullout << endl; return; }
                 }
-                // Pre-allocate file size for large files
-                fseek(outf, size > 0 ? size - 1 : 0, SEEK_SET);
-                fputc(0, outf);
-                fflush(outf);
+                // Pre-allocate file size for large files (>2GB support)
+                if (size > 0) {
+                    if (fseeko(outf, (off_t)(size - 1), SEEK_SET) != 0) {
+                        cout << "Failed to seek to end of large file (size: " << size << " bytes)\n";
+                        fclose(outf);
+                        return;
+                    }
+                    if (fputc(0, outf) == EOF) {
+                        cout << "Failed to write to end of large file\n";
+                        fclose(outf);
+                        return;
+                    }
+                }
+                if (fflush(outf) != 0) {
+                    cout << "Failed to flush file allocation\n";
+                }
                 fclose(outf);
 
                 // Try to load resume state
@@ -519,6 +534,12 @@ int main(int argc, char *argv[]) {
 
                 // Enhanced downloader worker with better error handling and dynamic peer refresh
                 auto worker = [&](int worker_id) {
+                    // Create peer order with worker-specific preference to avoid contention
+                    vector<int> peer_order(peerlist.size());
+                    for (int i = 0; i < (int)peerlist.size(); ++i) peer_order[i] = i;
+                    // Start each worker from a different peer to distribute load
+                    rotate(peer_order.begin(), peer_order.begin() + (worker_id % peerlist.size()), peer_order.end());
+                    
                     while (true) {
                         long long piece_idx = -1;
                         {
@@ -543,7 +564,8 @@ int main(int argc, char *argv[]) {
                         bool success = false;
 
                         while (attempt < MAX_RETRIES && !success) {
-                            for (auto &p : peerlist) {
+                            for (int peer_idx : peer_order) {
+                                auto &p = peerlist[peer_idx];
                                 string pip, pport, pname;
                                 tie(pname, pip, pport) = p;
 
@@ -558,7 +580,8 @@ int main(int argc, char *argv[]) {
                                     continue;
                                 }
 
-                                struct timeval tv = {20, 0};
+                                // Longer timeout for large pieces (512KB can take time on slow connections)
+                                struct timeval tv = {30, 0}; // 30 second timeout
                                 setsockopt(psock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
                                 setsockopt(psock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
 
@@ -602,10 +625,35 @@ int main(int argc, char *argv[]) {
                                 }
 
                                 FILE *fw = fopen(fullout.c_str(), "rb+");
-                                if (!fw) { attempt++; continue; }
-                                fseek(fw, (long long)piece_idx*PIECE_SIZE, SEEK_SET);
-                                fwrite(buffer.data(), 1, piece_size, fw);
-                                fflush(fw);
+                                if (!fw) { 
+                                    cout << "[Piece " << piece_idx << "] Failed to open output file for writing\n";
+                                    attempt++; 
+                                    continue; 
+                                }
+                                
+                                // Use fseeko for large file support (>2GB)
+                                off_t offset = (off_t)piece_idx * PIECE_SIZE;
+                                if (fseeko(fw, offset, SEEK_SET) != 0) {
+                                    cout << "[Piece " << piece_idx << "] Failed to seek to position " << offset << "\n";
+                                    fclose(fw);
+                                    attempt++;
+                                    continue;
+                                }
+                                
+                                size_t written = fwrite(buffer.data(), 1, piece_size, fw);
+                                if (written != piece_size) {
+                                    cout << "[Piece " << piece_idx << "] Failed to write complete piece. Expected: " << piece_size << ", Written: " << written << "\n";
+                                    fclose(fw);
+                                    attempt++;
+                                    continue;
+                                }
+                                
+                                if (fflush(fw) != 0) {
+                                    cout << "[Piece " << piece_idx << "] Failed to flush data to disk\n";
+                                    fclose(fw);
+                                    attempt++;
+                                    continue;
+                                }
                                 fclose(fw);
 
                                 {
@@ -620,7 +668,8 @@ int main(int argc, char *argv[]) {
                                 save_state();
 
                                 completed_count++;
-                                cout << "[Piece " << piece_idx << "] Downloaded successfully from " << pip << ":" << pport << " (" << completed_count << "/" << num_pieces << ")\n";
+                                long long progress_pct = (completed_count * 100) / num_pieces;
+                                cout << "[Piece " << piece_idx << "] Downloaded successfully from " << pip << ":" << pport << " (" << completed_count << "/" << num_pieces << " = " << progress_pct << "%)\n";
                                 success = true;
                                 break;
                             }
@@ -641,7 +690,12 @@ int main(int argc, char *argv[]) {
                     }
                 };
 
-                int num_workers = min((int)peerlist.size(), 8);
+                // Limit workers for very large files to prevent memory/resource exhaustion
+                int max_workers = (num_pieces > 1000) ? min(4, (int)peerlist.size()) : min((int)peerlist.size(), 8);
+                int num_workers = max_workers;
+                
+                cout << "Using " << num_workers << " download workers for " << num_pieces << " pieces\n";
+                
                 vector<thread> dthreads;
                 for (int i=0;i<num_workers;i++) dthreads.emplace_back(worker,i);
                 for (auto &t:dthreads) if (t.joinable()) t.join();
@@ -676,6 +730,14 @@ int main(int argc, char *argv[]) {
                 string dhash = filehash(fullout);
                 if (dhash == fullhash) {
                     cout << "[C] " << gid << " " << fname << " downloaded successfully.\n";
+                    
+                    // Add downloaded file to uploaded_files so this peer can now serve it to others
+                    uploaded_files[fname] = fullout;
+                    
+                    // Notify tracker that this peer now has the file (so other peers can download from us)
+                    string notify_cmd = "file_downloaded " + gid + " " + fname + " " + peername;
+                    string tracker_response = sendcomd(serversock, notify_cmd);
+                    
                     {
                         lock_guard<mutex> lock(downloads_mtx);
                         if (active_downloads.find(fname) != active_downloads.end()) {
@@ -752,8 +814,15 @@ int main(int argc, char *argv[]) {
             for (auto &t : workers) t.join();
             return 0;
         } else if (cmds[0] == "commands") displaycomds();
-        else if (cmdMap.find(cmds[0]) != cmdMap.end()) cmdMap[cmds[0]]();
-        else cout << "------- Invalid Command --------" << endl;
+        else if (cmdMap.find(cmds[0]) != cmdMap.end()) {
+           
+            cmdMap[cmds[0]]();
+        }
+        else {
+            for (auto& pair : cmdMap) cout << pair.first << " ";
+            cout << endl;
+            cout << "------- Invalid Command --------" << endl;
+        }
     }
 
     // cleanup (never reached)

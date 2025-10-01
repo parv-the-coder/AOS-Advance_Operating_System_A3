@@ -1,6 +1,3 @@
-// tracker.cpp  (updated)
-// Adds file metadata: per-piece hashes, upload_file, list_files, download_file
-
 #include <unistd.h>
 #include <sys/types.h>
 #include <thread>
@@ -107,7 +104,7 @@ void managepeer(int peersocket) {
             cout << "Socket received 0 bytes: " << peersocket << endl;
             return;
         }
-        cout << "Incoming command from socket " << peersocket << ": " << buff << endl;
+        // cout << "Incoming command from socket " << peersocket << ": " << buff << endl;
 
         // tokenize
         vector<string> comds;
@@ -116,7 +113,16 @@ void managepeer(int peersocket) {
             comds.push_back(token);
             token = strtok(NULL, " ");
         }
-
+        
+        // Log only command type (not full command with hashes)
+        if (!comds.empty()) {
+            cout << "Command from socket " << peersocket << ": " << comds[0];
+            if (comds[0] == "upload_file" && comds.size() >= 3) {
+                cout << " (file: " << comds[2] << ")";
+            }
+            cout << endl;
+        }
+        
         // handle commands (ensure at least one token)
         if (comds.empty()) {
             string msg = "Invalid command";
@@ -355,7 +361,7 @@ void managepeer(int peersocket) {
                         msg = "######## Files in Group " + gid + " ########\n";
                         for (const auto &fname : group_files[gid]) {
                             FileMeta &fm = files[fname];
-                            msg += fname + " SIZE:" + to_string(fm.size) + " PIECES:" + to_string(fm.num_pieces) + " HASH:" + fm.fullhash + "\n";
+                            msg += "----> " + fname + " SIZE:" + to_string(fm.size) + " PIECES:" + to_string(fm.num_pieces) + "\n";
                         }
                     }
                     send(peersocket, msg.c_str(), msg.size(), 0);
@@ -397,6 +403,48 @@ void managepeer(int peersocket) {
                 msg += "\n"; // <- ensure trailing newline
                 send(peersocket, msg.c_str(), msg.size(), 0);
 
+                }
+            }
+        }
+
+        // file_downloaded - notify tracker that peer completed download and can now serve file
+        else if (comds[0] == "file_downloaded") {
+            if (comds.size() != 4) {
+                string msg = "-----Invalid Arguments for file_downloaded-----";
+                send(peersocket, msg.c_str(), msg.size(), 0);
+            } else {
+                string gid = comds[1];
+                string filename = comds[2]; 
+                string peername = comds[3];
+                
+                // Check if group exists and peer is member
+                if (groups.find(gid) != groups.end() && groups[gid]->participants.find(peername) != groups[gid]->participants.end()) {
+                    // Check if file exists in group
+                    if (group_files.find(gid) != group_files.end() && 
+                        group_files[gid].find(filename) != group_files[gid].end()) {
+                        
+                        // Mark this peer as having the file (add to file map)
+                        if (peers.find(peername) != peers.end()) {
+                            peers[peername]->filmaptopath[filename] = filename; // dummy path since we don't need actual path for serving
+                            
+                            // Add peer to the file's peer list
+                            if (files.find(filename) != files.end()) {
+                                files[filename].peers.insert(peername);
+                            }
+                            
+                            string msg = "SUCCESS: Peer " + peername + " registered as seeder for " + filename;
+                            send(peersocket, msg.c_str(), msg.size(), 0);
+                        } else {
+                            string msg = "ERROR: Peer not found";
+                            send(peersocket, msg.c_str(), msg.size(), 0);
+                        }
+                    } else {
+                        string msg = "ERROR: File not found in group";
+                        send(peersocket, msg.c_str(), msg.size(), 0);
+                    }
+                } else {
+                    string msg = "ERROR: Group not found or peer not member";
+                    send(peersocket, msg.c_str(), msg.size(), 0);
                 }
             }
         }
