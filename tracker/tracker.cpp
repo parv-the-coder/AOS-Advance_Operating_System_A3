@@ -421,22 +421,14 @@ void managepeer(int peersocket) {
                 string gid = comds[1];
                 string filename = comds[2]; 
                 string peername = comds[3];
-                
-                // Check if group exists and peer is member
+                // ...existing code...
                 if (groups.find(gid) != groups.end() && groups[gid]->participants.find(peername) != groups[gid]->participants.end()) {
-                    // Check if file exists in group
-                    if (group_files.find(gid) != group_files.end() && 
-                        group_files[gid].find(filename) != group_files[gid].end()) {
-                        
-                        // Mark this peer as having the file (add to file map)
+                    if (group_files.find(gid) != group_files.end() && group_files[gid].find(filename) != group_files[gid].end()) {
                         if (peers.find(peername) != peers.end()) {
-                            peers[peername]->filmaptopath[filename] = filename; // dummy path since we don't need actual path for serving
-                            
-                            // Add peer to the file's peer list
+                            peers[peername]->filmaptopath[filename] = filename;
                             if (files.find(filename) != files.end()) {
                                 files[filename].peers.insert(peername);
                             }
-                            
                             string msg = "SUCCESS: Peer " + peername + " registered as seeder for " + filename;
                             send(peersocket, msg.c_str(), msg.size(), 0);
                         } else {
@@ -449,6 +441,38 @@ void managepeer(int peersocket) {
                     }
                 } else {
                     string msg = "ERROR: Group not found or peer not member";
+                    send(peersocket, msg.c_str(), msg.size(), 0);
+                }
+            }
+        }
+
+        // stop_share - remove peer from file's seeder list for group
+        else if (comds[0] == "stop_share") {
+            if (comds.size() != 4) {
+                string msg = "-----Invalid Arguments for stop_share-----";
+                send(peersocket, msg.c_str(), msg.size(), 0);
+            } else {
+                string gid = comds[1];
+                string filename = comds[2];
+                string peername = comds[3];
+                if (!isgrouppresent(gid)) {
+                    string msg = "ERROR: Group not found";
+                    send(peersocket, msg.c_str(), msg.size(), 0);
+                } else if (!isuserpresent(peername) || groups[gid]->participants.find(peername) == groups[gid]->participants.end()) {
+                    string msg = "ERROR: Peer not found or not member of group";
+                    send(peersocket, msg.c_str(), msg.size(), 0);
+                } else if (group_files[gid].find(filename) == group_files[gid].end()) {
+                    string msg = "ERROR: File not found in group";
+                    send(peersocket, msg.c_str(), msg.size(), 0);
+                } else if (files.find(filename) == files.end()) {
+                    string msg = "ERROR: File metadata not found";
+                    send(peersocket, msg.c_str(), msg.size(), 0);
+                } else {
+                    files[filename].peers.erase(peername);
+                    if (peers.find(peername) != peers.end()) {
+                        peers[peername]->filmaptopath.erase(filename);
+                    }
+                    string msg = "SUCCESS: Peer " + peername + " stopped sharing " + filename + " in group " + gid;
                     send(peersocket, msg.c_str(), msg.size(), 0);
                 }
             }

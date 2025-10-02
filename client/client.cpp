@@ -70,6 +70,7 @@ void displaycomds() {
     cout << "list_files <groupid>\n";
     cout << "upload_file <groupid> <filepath>\n";
     cout << "download_file <groupid> <filename> <dest_path>\n";
+    cout << "stop_share <groupid> <filename>\n";
     cout << "show_downloads\n";
     cout << "commands\n";
     cout << "exit\n";
@@ -291,7 +292,25 @@ int main(int argc, char *argv[]) {
         int length = cmds.size();
         if (length == 0) { cout << "-------- Unrecognized command. Enter a valid command. --------" << endl; continue; }
         
-        unordered_map<string, function<void()>> cmdMap;
+    unordered_map<string, function<void()>> cmdMap;
+        // stop_share command
+        cmdMap["stop_share"] = [&]() {
+            logincheck([&]() {
+                if (length != 3) { cout << "Usage: stop_share <groupid> <filename>\n"; return; }
+                string gid = cmds[1], fname = cmds[2];
+                // Remove from local uploaded_files
+                if (uploaded_files.find(fname) != uploaded_files.end()) {
+                    uploaded_files.erase(fname);
+                    cout << "Stopped sharing file: " << fname << " in group " << gid << endl;
+                } else {
+                    cout << "File " << fname << " is not being shared by you." << endl;
+                }
+                // Notify tracker to remove this peer as seeder
+                string msg = "stop_share " + gid + " " + fname + " " + peername;
+                string resp = sendcomd(serversock, msg);
+                cout << resp << endl;
+            });
+        };
 
         cmdMap["create_user"] = [&]() {
             if (length != 3) { cout << "Usage: create_user <user> <pass>\n"; return; }
