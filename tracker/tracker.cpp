@@ -104,7 +104,7 @@ void managepeer(int peersocket) {
             cout << "Socket received 0 bytes: " << peersocket << endl;
             return;
         }
-        // cout << "Incoming command from socket " << peersocket << ": " << buff << endl;
+        cout << "Incoming command from socket " << peersocket << ": " << buff << endl;
 
         // tokenize
         vector<string> comds;
@@ -112,15 +112,6 @@ void managepeer(int peersocket) {
         while (token != NULL) {
             comds.push_back(token);
             token = strtok(NULL, " ");
-        }
-        
-        // Log only command type (not full command with hashes)
-        if (!comds.empty()) {
-            cout << "Command from socket " << peersocket << ": " << comds[0];
-            if (comds[0] == "upload_file" && comds.size() >= 3) {
-                cout << " (file: " << comds[2] << ")";
-            }
-            cout << endl;
         }
         
         // handle commands (ensure at least one token)
@@ -361,7 +352,7 @@ void managepeer(int peersocket) {
                         msg = "######## Files in Group " + gid + " ########\n";
                         for (const auto &fname : group_files[gid]) {
                             FileMeta &fm = files[fname];
-                            msg += "----> " + fname + " SIZE:" + to_string(fm.size) + " PIECES:" + to_string(fm.num_pieces) + "\n";
+                            msg += fname + " SIZE:" + to_string(fm.size) + " PIECES:" + to_string(fm.num_pieces) + "\n";
                         }
                     }
                     send(peersocket, msg.c_str(), msg.size(), 0);

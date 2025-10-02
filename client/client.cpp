@@ -383,6 +383,8 @@ int main(int argc, char *argv[]) {
                 string fname = (pos == string::npos) ? fpath : fpath.substr(pos + 1);
                 // store file locally so peer server can serve pieces
                 uploaded_files[fname] = fpath;   // >>> FIX <<<
+                cout << "[Peer] Registered file for sharing: " << fname 
+                    << " (" << fpath << ")\n";  // >>> DEBUG <<<
 
                 string cmd = "upload_file " + gid + " " + fname + " " + peername + " " + to_string(fsize) + " " + fullhash + " " + to_string(num_pieces);
                 for (auto &h : piece_hashes) cmd += " " + h;
@@ -670,6 +672,11 @@ int main(int argc, char *argv[]) {
                                 completed_count++;
                                 long long progress_pct = (completed_count * 100) / num_pieces;
                                 cout << "[Piece " << piece_idx << "] Downloaded successfully from " << pip << ":" << pport << " (" << completed_count << "/" << num_pieces << " = " << progress_pct << "%)\n";
+                                
+                                // Report progress at milestones for large files
+                                if (num_pieces > 100 && completed_count % (num_pieces / 10) == 0) {
+                                    cout << "*** Download Progress: " << progress_pct << "% complete ***\n";
+                                }
                                 success = true;
                                 break;
                             }
@@ -733,10 +740,12 @@ int main(int argc, char *argv[]) {
                     
                     // Add downloaded file to uploaded_files so this peer can now serve it to others
                     uploaded_files[fname] = fullout;
+                    cout << "[Seeder] Now sharing downloaded file: " << fname << " (" << fullout << ")\n";
                     
                     // Notify tracker that this peer now has the file (so other peers can download from us)
                     string notify_cmd = "file_downloaded " + gid + " " + fname + " " + peername;
                     string tracker_response = sendcomd(serversock, notify_cmd);
+                    cout << "[Tracker] Notified tracker about completed download: " << tracker_response << endl;
                     
                     {
                         lock_guard<mutex> lock(downloads_mtx);
