@@ -95,6 +95,7 @@ bool isuserpresent(string str) {
 }
 
 void managepeer(int peersocket) {
+    string disconnecting_user;
     while (1) {
         // read
         char buff[512000];
@@ -102,6 +103,15 @@ void managepeer(int peersocket) {
         int bytrd = read(peersocket, buff, sizeof(buff));
         if (bytrd == 0) {
             cout << "Socket received 0 bytes: " << peersocket << endl;
+            // On disconnect, transfer group ownership if needed
+            if (!disconnecting_user.empty()) {
+                for (auto &gpair : groups) {
+                    group *grp = gpair.second;
+                    if (grp->groupmaster == disconnecting_user) {
+                        grp->deluser(disconnecting_user);
+                    }
+                }
+            }
             return;
         }
         cout << "Incoming command from socket " << peersocket << ": " << buff << endl;
@@ -119,6 +129,10 @@ void managepeer(int peersocket) {
             string msg = "Invalid command";
             send(peersocket, msg.c_str(), msg.size(), 0);
             continue;
+        }
+        // Track user for disconnect logic
+        if ((comds[0] == "login" || comds[0] == "logout") && comds.size() > 1) {
+            disconnecting_user = comds[1];
         }
 
         // create_user

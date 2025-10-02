@@ -740,12 +740,10 @@ int main(int argc, char *argv[]) {
                     
                     // Add downloaded file to uploaded_files so this peer can now serve it to others
                     uploaded_files[fname] = fullout;
-                    cout << "[Seeder] Now sharing downloaded file: " << fname << " (" << fullout << ")\n";
                     
                     // Notify tracker that this peer now has the file (so other peers can download from us)
                     string notify_cmd = "file_downloaded " + gid + " " + fname + " " + peername;
                     string tracker_response = sendcomd(serversock, notify_cmd);
-                    cout << "[Tracker] Notified tracker about completed download: " << tracker_response << endl;
                     
                     {
                         lock_guard<mutex> lock(downloads_mtx);
