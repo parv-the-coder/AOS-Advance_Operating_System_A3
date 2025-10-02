@@ -10,13 +10,12 @@
 #include <string>
 #include <unordered_map>
 #include <stdlib.h>
-#include <fstream>
 #include <unordered_set>
 #include <sstream>
 
 using namespace std;
 
-// representing peers
+// Represents a peer/client in the P2P network
 struct client {
     string hostip, hostport, peername, passcode;
     unordered_map<string, string> filmaptopath;
@@ -38,7 +37,7 @@ struct client {
     }
 };
 
-// representing group
+// Represents a group in the P2P network
 class group {
 public:
     string gid;
@@ -73,6 +72,7 @@ public:
     }
 };
 
+// Metadata for a shared file (size, hashes, seeders)
 struct FileMeta {
     long long size = 0;
     string fullhash;
@@ -81,11 +81,13 @@ struct FileMeta {
     unordered_set<string> peers; // peernames sharing this file
 };
 
+// Global maps for tracking users, groups, files, and group-file relationships
 unordered_map<string, client*> peers;   // peername -> client*
 unordered_map<string, group*> groups;   // gid -> group*
 unordered_map<string, unordered_set<string>> group_files; // gid -> filenames
 unordered_map<string, FileMeta> files;  // filename -> metadata
 
+// Utility functions to check existence of group/user
 bool isgrouppresent(string str) {
     return groups.find(str) != groups.end();
 }
@@ -94,10 +96,12 @@ bool isuserpresent(string str) {
     return peers.find(str) != peers.end();
 }
 
+// Handles all commands from a connected peer (client)
 void managepeer(int peersocket) {
     string disconnecting_user;
+    // Main loop: read and process commands from peer
     while (1) {
-        // read
+    // Read incoming command from socket
         char buff[512000];
         memset(buff, 0, sizeof(buff));
         int bytrd = read(peersocket, buff, sizeof(buff));
@@ -116,7 +120,7 @@ void managepeer(int peersocket) {
         }
         cout << "Incoming command from socket " << peersocket << ": " << buff << endl;
 
-        // tokenize
+    // Tokenize command string into arguments
         vector<string> comds;
         char *token = strtok(buff, " ");
         while (token != NULL) {
@@ -124,18 +128,18 @@ void managepeer(int peersocket) {
             token = strtok(NULL, " ");
         }
         
-        // handle commands (ensure at least one token)
+    // Handle commands (ensure at least one token)
         if (comds.empty()) {
             string msg = "Invalid command";
             send(peersocket, msg.c_str(), msg.size(), 0);
             continue;
         }
-        // Track user for disconnect logic
+    // Track user for disconnect logic (for group ownership transfer)
         if ((comds[0] == "login" || comds[0] == "logout") && comds.size() > 1) {
             disconnecting_user = comds[1];
         }
 
-        // create_user
+    // Command: create_user <username> <passcode>
         if (comds[0] == "create_user") {
             if (comds.size() != 3) {
                 string msg = "-----Invalid Arguments-----";
@@ -152,7 +156,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // login
+    // Command: login <username> <passcode> <ip> <port>
         else if (comds[0] == "login") {
             if (comds.size() < 5) {
                 string msg = "-----Invalid Arguments for login-----";
@@ -170,7 +174,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // logout
+    // Command: logout <username>
         else if (comds[0] == "logout") {
             if (comds.size() < 2) {
                 string msg = "-----Invalid Arguments-----";
@@ -185,7 +189,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // create_group
+    // Command: create_group <groupid> <owner_username>
         else if (comds[0] == "create_group") {
             if (comds.size() < 3) {
                 string msg = "-----Invalid Arguments-----";
@@ -204,7 +208,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // join_group
+    // Command: join_group <groupid> <username>
         else if (comds[0] == "join_group") {
             if (comds.size() < 3) {
                 string msg = "-----Invalid Arguments-----";
@@ -225,7 +229,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // leave_group
+    // Command: leave_group <groupid> <username>
         else if (comds[0] == "leave_group") {
             if (comds.size() < 3) {
                 string msg = "-----Invalid Arguments-----";
@@ -246,7 +250,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // list_requests
+    // Command: list_requests <groupid> <owner_username>
         else if (comds[0] == "list_requests") {
             if (comds.size() < 3) {
                 string msg = "-----Invalid Arguments-----";
@@ -268,7 +272,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // accept_request
+    // Command: accept_request <groupid> <applicant_username> <owner_username>
         else if (comds[0] == "accept_request") {
             if (comds.size() < 4) {
                 string msg = "-----Invalid Arguments-----";
@@ -292,7 +296,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // list_groups
+    // Command: list_groups
         else if (comds[0] == "list_groups") {
             string msg = "############### Available groups on the network ###############";
             for (auto it = groups.begin(); it != groups.end(); it++) {
@@ -302,7 +306,7 @@ void managepeer(int peersocket) {
             send(peersocket, msg.c_str(), msg.size(), 0);
         }
 
-        // upload_file
+    // Command: upload_file <gid> <filename> <peername> <filesize> <fullhash> <num_pieces> <piecehash1> ...
         else if (comds[0] == "upload_file") {
             // format:
             // upload_file <gid> <filename> <peername> <filesize> <fullhash> <num_pieces> <piecehash1> <piecehash2> ...
@@ -344,7 +348,7 @@ void managepeer(int peersocket) {
             }
         }
 
-        // list_files
+    // Command: list_files <gid> <username>
         else if (comds[0] == "list_files") {
             if (comds.size() < 3) {
                 string msg = "-----Invalid Arguments-----";
@@ -374,7 +378,8 @@ void managepeer(int peersocket) {
             }
         }
 
-        // download_file (tracker returns metadata + peers)
+    // Command: download_file <gid> <filename> <username>
+    // Returns file metadata and list of seeders
         else if (comds[0] == "download_file") {
             if (comds.size() < 4) {
                 string msg = "-----Invalid Arguments for download_file-----";
@@ -412,7 +417,8 @@ void managepeer(int peersocket) {
             }
         }
 
-        // file_downloaded - notify tracker that peer completed download and can now serve file
+    // Command: file_downloaded <gid> <filename> <peername>
+    // Notify tracker that peer completed download and can now serve file
         else if (comds[0] == "file_downloaded") {
             if (comds.size() != 4) {
                 string msg = "-----Invalid Arguments for file_downloaded-----";
@@ -446,7 +452,8 @@ void managepeer(int peersocket) {
             }
         }
 
-        // stop_share - remove peer from file's seeder list for group
+    // Command: stop_share <gid> <filename> <peername>
+    // Remove peer from file's seeder list for group
         else if (comds[0] == "stop_share") {
             if (comds.size() != 4) {
                 string msg = "-----Invalid Arguments for stop_share-----";
@@ -479,18 +486,21 @@ void managepeer(int peersocket) {
         }
 
         else {
+            // Handle unknown commands
             string msg = "Unrecognized command";
             send(peersocket, msg.c_str(), msg.size(), 0);
         }
     }
 }
 
+// Entry point: starts the tracker server and listens for incoming connections
 int main(int argc, char *argv[]) {
     if (argc != 3) {
         cout << "-----Invalid Arguments-----" << endl;
         return 0;
     }
 
+    // Read tracker IP and port from config file
     FILE *filconfig = fopen(argv[1], "r");
     if (!filconfig) { cout << "Failed to open tracker info file" << endl; return 0; }
     char ipbuf[128], portbuf[32];
@@ -502,18 +512,21 @@ int main(int argc, char *argv[]) {
     int serversock;
     struct sockaddr_in serveradd;
 
+    // Create server socket
     serversock = socket(AF_INET, SOCK_STREAM, 0);
     if (serversock == 0) {
         cout << "------- Error: Could not create socket -------" << endl;
         return 0;
     }
 
+    // Set socket options for address reuse
     int choice = 1;
     if (setsockopt(serversock, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &choice, sizeof(choice)) != 0) {
         cout << "------- Unable to configure socket options ------" << endl;
         return 0;
     }
 
+    // Bind server to IP and port
     serveradd.sin_family = AF_INET;
     serveradd.sin_addr.s_addr = INADDR_ANY;
     int port = stoi(serverport);
@@ -524,11 +537,13 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    // Start listening for incoming connections
     if (listen(serversock, 20) < 0) {
         cout << "------- Unable to start listening on socket ---------" << endl;
         return 0;
     }
 
+    // Print server startup info and available commands
     cout << "\n=========================================\n";
     cout << "          TRACKER SERVER STARTED         \n";
     cout << "=========================================\n";
@@ -543,6 +558,7 @@ int main(int argc, char *argv[]) {
     vector<thread> peerss;
     int length = sizeof(serveradd);
 
+    // Thread to handle console input (quit command)
     thread exit_thread([]() {
         string inp;
         while (true) {
@@ -552,6 +568,7 @@ int main(int argc, char *argv[]) {
     });
     exit_thread.detach();
 
+    // Main accept loop: handle incoming client connections
     while (1) {
         if ((incomsock = accept(serversock, (struct sockaddr *)&serveradd, (socklen_t *)&length)) < 0) {
             cout << "------- Unable to accept incoming connection -------" << endl;
@@ -561,6 +578,7 @@ int main(int argc, char *argv[]) {
         peerss.push_back(thread(managepeer, incomsock));
     }
 
+    // Join all peer threads before exiting
     for (int i = 0; i < peerss.size(); i++) peerss[i].join();
     return 0;
 }

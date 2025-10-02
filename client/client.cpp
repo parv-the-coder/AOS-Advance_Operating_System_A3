@@ -5,7 +5,6 @@
 #include <netinet/in.h>
 #include <thread>
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -410,8 +409,6 @@ int main(int argc, char *argv[]) {
                 string fname = (pos == string::npos) ? fpath : fpath.substr(pos + 1);
                 // store file locally so peer server can serve pieces
                 uploaded_files[fname] = fpath;   // >>> FIX <<<
-                cout << "[Peer] Registered file for sharing: " << fname 
-                    << " (" << fpath << ")\n";  // >>> DEBUG <<<
 
                 string cmd = "upload_file " + gid + " " + fname + " " + peername + " " + to_string(fsize) + " " + fullhash + " " + to_string(num_pieces);
                 for (auto &h : piece_hashes) cmd += " " + h;
