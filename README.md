@@ -9,7 +9,6 @@ Compile both client and tracker:
 cd ../client
 cd ../tracker
 ```
-Or manually:
 ```bash
 g++ -o client client.cpp -lssl -lcrypto -lpthread
 g++ -o tracker tracker.cpp -lpthread
