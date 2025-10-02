@@ -491,10 +491,13 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    fstream filconfig;
-    filconfig.open(argv[1]);
-    string serverip, serverport;
-    filconfig >> serverip >> serverport;
+    FILE *filconfig = fopen(argv[1], "r");
+    if (!filconfig) { cout << "Failed to open tracker info file" << endl; return 0; }
+    char ipbuf[128], portbuf[32];
+    if (fscanf(filconfig, "%127s %31s", ipbuf, portbuf) != 2) { cout << "Failed to read tracker info" << endl; fclose(filconfig); return 0; }
+    fclose(filconfig);
+    string serverip = ipbuf;
+    string serverport = portbuf;
 
     int serversock;
     struct sockaddr_in serveradd;

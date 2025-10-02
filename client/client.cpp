@@ -4,7 +4,8 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <thread>
-#include <fstream>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -110,13 +111,12 @@ void handling_peer_req(int peersock) {
         if (uploaded_files.find(fname) == uploaded_files.end()) { close(peersock); return; }
         string fullpath = uploaded_files[fname];
 
-        ifstream fin(fullpath, ios::binary);
-        if (!fin) { close(peersock); return; }
-        fin.seekg((long long)index * PIECE_SIZE);
-        vector<char> buf(PIECE_SIZE);
-        fin.read(buf.data(), PIECE_SIZE);
-        streamsize n = fin.gcount();
-        fin.close();
+    int fd = open(fullpath.c_str(), O_RDONLY);
+    if (fd < 0) { close(peersock); return; }
+    off_t offset = (off_t)index * PIECE_SIZE;
+    vector<char> buf(PIECE_SIZE);
+    ssize_t n = pread(fd, buf.data(), PIECE_SIZE, offset);
+    close(fd);
         
         if (n > 0) {
             // Send piece size first, then piece data
@@ -202,14 +202,16 @@ string sendcomd(int sock, const string &cmd) {
 }
 
 string filehash(const string &filepath) {
-    ifstream f(filepath, ios::binary);
-    if (!f) return "";
+    int fd = open(filepath.c_str(), O_RDONLY);
+    if (fd < 0) return "";
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
     EVP_DigestInit_ex(ctx, EVP_sha1(), NULL);
     char buf[524288];
-    while (f.read(buf, sizeof(buf)) || f.gcount()) {
-        EVP_DigestUpdate(ctx, buf, f.gcount());
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+        EVP_DigestUpdate(ctx, buf, n);
     }
+    close(fd);
     unsigned char hash[EVP_MAX_MD_SIZE]; unsigned int len;
     EVP_DigestFinal_ex(ctx, hash, &len);
     EVP_MD_CTX_free(ctx);
@@ -221,14 +223,15 @@ string filehash(const string &filepath) {
 
 vector<string> compute_piece_hashes(const string &filepath, long long &num_pieces) {
     vector<string> hashes;
-    ifstream fin(filepath, ios::binary | ios::ate);
-    long long filesize = fin.tellg();
-    fin.seekg(0, ios::beg);
+    int fd = open(filepath.c_str(), O_RDONLY);
+    if (fd < 0) { num_pieces = 0; return hashes; }
+    off_t filesize = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
     num_pieces = (filesize + PIECE_SIZE - 1) / PIECE_SIZE;
     for (long long i = 0; i < num_pieces; ++i) {
         vector<char> buf(PIECE_SIZE);
-        fin.read(buf.data(), PIECE_SIZE);
-        streamsize n = fin.gcount();
+        ssize_t n = read(fd, buf.data(), PIECE_SIZE);
+        if (n <= 0) break;
         EVP_MD_CTX *ctx = EVP_MD_CTX_new();
         EVP_DigestInit_ex(ctx, EVP_sha1(), NULL);
         EVP_DigestUpdate(ctx, buf.data(), n);
@@ -238,7 +241,7 @@ vector<string> compute_piece_hashes(const string &filepath, long long &num_piece
         char hex[41]; for (unsigned int j=0;j<hlen;j++) sprintf(hex+j*2,"%02x",hash[j]); hex[40]=0;
         hashes.push_back(string(hex));
     }
-    fin.close();
+    close(fd);
     return hashes;
 }
 
@@ -260,9 +263,13 @@ int main(int argc, char *argv[]) {
     while (argv[1][idx] != '\0') { hostport.push_back(argv[1][idx]); idx++; }
 
     string serverip, serverport;
-    fstream file;
-    file.open(argv[2]);
-    file >> serverip >> serverport;
+    FILE *file = fopen(argv[2], "r");
+    if (!file) { cout << "Failed to open tracker info file" << endl; return 0; }
+    char ipbuf[128], portbuf[32];
+    if (fscanf(file, "%127s %31s", ipbuf, portbuf) != 2) { cout << "Failed to read tracker info" << endl; fclose(file); return 0; }
+    fclose(file);
+    serverip = ipbuf;
+    serverport = portbuf;
 
     // connect to tracker
     if ((serversock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { cout << "-------- Unable to create socket -------" << endl; return 0; }
@@ -390,9 +397,10 @@ int main(int argc, char *argv[]) {
                     if (i > 2) fpath += " ";
                     fpath += cmds[i];
                 }
-                ifstream fin(fpath, ios::binary | ios::ate);
-                if (!fin) { cout << "File not found: " << fpath << endl; return; }
-                long long fsize = fin.tellg(); fin.close();
+                int fd = open(fpath.c_str(), O_RDONLY);
+                if (fd < 0) { cout << "File not found: " << fpath << endl; return; }
+                off_t fsize = lseek(fd, 0, SEEK_END);
+                close(fd);
                 // compute piece hashes and full hash
                 long long num_pieces = 0;
                 vector<string> piece_hashes = compute_piece_hashes(fpath, num_pieces);
@@ -507,13 +515,13 @@ int main(int argc, char *argv[]) {
                 // Try to load resume state
                 vector<int> piece_status(num_pieces, 0);
                 string statefile = fullout + ".downloading";
-                ifstream statein(statefile, ios::binary);
+                FILE *statein = fopen(statefile.c_str(), "rb");
                 if (statein) {
                     for (long long i = 0; i < num_pieces; ++i) {
-                        int st = 0; statein.read((char*)&st, sizeof(int));
-                        if (statein) piece_status[i] = st;
+                        int st = 0;
+                        if (fread(&st, sizeof(int), 1, statein) == 1) piece_status[i] = st;
                     }
-                    statein.close();
+                    fclose(statein);
                 }
 
                 // Initialize download tracking
@@ -547,10 +555,10 @@ int main(int argc, char *argv[]) {
 
                 // Save state helper
                 auto save_state = [&]() {
-                    ofstream stateout(statefile, ios::binary);
+                    FILE *stateout = fopen(statefile.c_str(), "wb");
                     if (!stateout) return;
-                    for (long long i = 0; i < num_pieces; ++i) stateout.write((char*)&piece_status[i], sizeof(int));
-                    stateout.close();
+                    for (long long i = 0; i < num_pieces; ++i) fwrite(&piece_status[i], sizeof(int), 1, stateout);
+                    fclose(stateout);
                 };
 
                 // Enhanced downloader worker with better error handling and dynamic peer refresh
@@ -788,39 +796,38 @@ int main(int argc, char *argv[]) {
         cmdMap["show_downloads"] = [&]() {
             logincheck([&]() {
                 lock_guard<mutex> lock(downloads_mtx);
-                if (active_downloads.empty()) {
-                    cout << "No active downloads.\n";
-                    return;
-                }
-                
-                cout << "========== Active Downloads ==========\n";
+                bool any = false;
+                cout << "========== Downloads ==========" << endl;
                 for (auto &pair : active_downloads) {
                     const DownloadInfo &info = pair.second;
-                    if (!info.is_active) continue;
-                    
-                    time_t now = time(nullptr);
-                    int elapsed = now - info.start_time;
-                    int progress = (info.completed_pieces * 100) / info.total_pieces;
-                    
-                    cout << "File: " << info.filename << "\n";
-                    cout << "  Group: " << info.group_id << "\n";
-                    cout << "  Size: " << info.total_size << " bytes\n";
-                    cout << "  Progress: " << info.completed_pieces << "/" << info.total_pieces << " pieces (" << progress << "%)\n";
-                    cout << "  Elapsed: " << elapsed << " seconds\n";
-                    cout << "  Status: ";
-                    
-                    int pending = 0, downloading = 0, completed = 0, failed = 0;
+                    bool completed = true;
                     for (int status : info.piece_status) {
-                        if (status == 0) pending++;
-                        else if (status == 1) downloading++;
-                        else if (status == 2) completed++;
-                        else if (status == 3) failed++;
+                        if (status != 2) { completed = false; break; }
                     }
-                    
-                    cout << pending << " pending, " << downloading << " downloading, " 
-                         << completed << " completed, " << failed << " failed\n";
-                    cout << "----------------------------------------\n";
+                    if (info.is_active || completed) {
+                        any = true;
+                        time_t now = time(nullptr);
+                        int elapsed = now - info.start_time;
+                        int progress = (info.completed_pieces * 100) / info.total_pieces;
+                        cout << "File: " << info.filename << "\n";
+                        cout << "  Group: " << info.group_id << "\n";
+                        cout << "  Size: " << info.total_size << " bytes\n";
+                        cout << "  Progress: " << info.completed_pieces << "/" << info.total_pieces << " pieces (" << progress << "%)\n";
+                        cout << "  Elapsed: " << elapsed << " seconds\n";
+                        cout << "  Status: ";
+                        int pending = 0, downloading = 0, done = 0, failed = 0;
+                        for (int status : info.piece_status) {
+                            if (status == 0) pending++;
+                            else if (status == 1) downloading++;
+                            else if (status == 2) done++;
+                            else if (status == 3) failed++;
+                        }
+                        if (completed) cout << "COMPLETED";
+                        else cout << pending << " pending, " << downloading << " downloading, " << done << " completed, " << failed << " failed";
+                        cout << "\n----------------------------------------\n";
+                    }
                 }
+                if (!any) cout << "No downloads found.\n";
             });
         };
 
